@@ -1,0 +1,64 @@
+{
+  "name": "localpov",
+  "version": "0.1.0",
+  "description": "Development context bridge for AI coding agents. Terminal capture, browser console, network logs, screenshots, Docker logs — one MCP server.",
+  "bin": {
+    "localpov": "./bin/localpov.js",
+    "localpov-mcp": "./bin/localpov-mcp.js"
+  },
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "start": "node bin/localpov.js",
+    "dev": "tsc --watch & node --watch bin/localpov.js",
+    "mcp": "node bin/localpov-mcp.js",
+    "test": "tsc && node --test test/*.test.js",
+    "prepublishOnly": "tsc"
+  },
+  "files": [
+    "bin/",
+    "dist/",
+    "dashboard/",
+    "README.md",
+    "LICENSE"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/localpov/localpov"
+  },
+  "homepage": "https://github.com/localpov/localpov#readme",
+  "bugs": {
+    "url": "https://github.com/localpov/localpov/issues"
+  },
+  "author": "LocalPOV",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.28.0",
+    "http-proxy": "^1.18.1",
+    "ws": "^8.20.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "license": "MIT",
+  "keywords": [
+    "localhost",
+    "preview",
+    "developer-tools",
+    "hot-reload",
+    "hmr",
+    "cli",
+    "mcp",
+    "ai-agent",
+    "terminal-capture",
+    "browser-console",
+    "docker-logs",
+    "context-bridge"
+  ],
+  "devDependencies": {
+    "@types/http-proxy": "^1.17.17",
+    "@types/node": "^25.5.0",
+    "@types/ws": "^8.18.1",
+    "typescript": "^6.0.2"
+  }
+}

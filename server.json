@@ -1,0 +1,24 @@
+{
+  "$schema": "https://registry.modelcontextprotocol.io/schema/server.json",
+  "name": "io.github.localpov/localpov",
+  "title": "LocalPOV — Development Context Bridge",
+  "description": "Gives AI coding agents full visibility into your development environment: terminal output, browser console errors, network failures, Docker logs, port status, and build errors. One tool call (get_diagnostics) returns a complete health check.",
+  "version": "0.1.0",
+  "repository": {
+    "url": "https://github.com/localpov/localpov",
+    "source": "github"
+  },
+  "packages": [
+    {
+      "registryType": "npm",
+      "registryBaseUrl": "https://registry.npmjs.org",
+      "identifier": "localpov",
+      "version": "0.1.0",
+      "runtimeHint": "npx",
+      "transport": {
+        "type": "stdio"
+      },
+      "packageArguments": ["--mcp"]
+    }
+  ]
+}

@@ -1,0 +1,15 @@
+# Future features (not shipped)
+_future/
+
+# Tests
+test/
+
+# Dev files
+.localpovrc
+.github/
+.claude/
+*.log
+
+# OS files
+.DS_Store
+Thumbs.db

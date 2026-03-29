@@ -1,0 +1,909 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>LocalPOV</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+:root{
+  --bg:#fff;--bg2:#f5f5f4;--fg:#171717;--fg2:#737373;--fg3:#a3a3a3;
+  --bdr:#e5e5e5;--accent:#2563eb;--accent-bg:#eff6ff;
+  --green:#16a34a;--red:#ef4444;
+  --safe-t:env(safe-area-inset-top,0px);--safe-b:env(safe-area-inset-bottom,0px);
+}
+@media(prefers-color-scheme:dark){:root{
+  --bg:#0a0a0a;--bg2:#171717;--fg:#fafafa;--fg2:#a3a3a3;--fg3:#525252;
+  --bdr:#262626;--accent:#60a5fa;--accent-bg:#172554;
+  --green:#4ade80;--red:#f87171;
+}}
+html,body{height:100%;overflow:hidden}
+body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif;background:var(--bg);color:var(--fg);-webkit-tap-highlight-color:transparent}
+
+.hdr{padding:calc(16px + var(--safe-t)) 20px 12px}
+.hdr h1{font-size:20px;font-weight:700;letter-spacing:-0.5px}
+.hdr p{font-size:13px;color:var(--fg2);margin-top:2px}
+
+.apps{padding:8px 16px 16px;overflow-y:auto;-webkit-overflow-scrolling:touch}
+.card{
+  background:var(--bg2);border:1px solid var(--bdr);border-radius:14px;
+  padding:16px;margin-bottom:8px;display:flex;align-items:center;gap:14px;
+  cursor:pointer;transition:transform .1s;-webkit-user-select:none;user-select:none;
+}
+.card:active{transform:scale(0.97)}
+.dot{width:10px;height:10px;border-radius:50%;background:var(--green);flex-shrink:0}
+.dot-term{background:var(--accent)}
+.card-info{flex:1;min-width:0}
+.card-port{font-size:16px;font-weight:600;font-variant-numeric:tabular-nums}
+.card-fw{font-size:13px;color:var(--fg2);margin-top:1px}
+.card-arr{color:var(--fg3);font-size:20px;font-weight:300}
+
+.empty{text-align:center;padding:60px 24px;color:var(--fg2)}
+.empty h2{font-size:16px;font-weight:600;color:var(--fg);margin-bottom:4px}
+.empty p{font-size:13px;line-height:1.5}
+.empty code{background:var(--bg2);padding:2px 8px;border-radius:4px;font-size:12px}
+
+.scan{display:flex;align-items:center;gap:8px;padding:6px 20px;font-size:12px;color:var(--fg3)}
+.scan-dot{width:6px;height:6px;border-radius:50%;background:var(--green);animation:pulse 1.5s infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}
+
+/* Tab bar */
+.tab-bar{
+  position:fixed;bottom:0;left:0;right:0;z-index:10;
+  display:flex;
+  border-top:1px solid var(--bdr);background:var(--bg);
+  padding-bottom:var(--safe-b);
+}
+.tab{
+  flex:1;border:none;background:none;font-family:inherit;font-size:11px;font-weight:600;
+  color:var(--fg3);padding:10px 4px 8px;cursor:pointer;text-align:center;
+  display:flex;flex-direction:column;align-items:center;gap:3px;
+}
+.tab.active{color:var(--accent)}
+.tab-icon{font-size:20px;line-height:1}
+.tab .tab-badge{
+  display:inline-block;min-width:16px;height:16px;border-radius:8px;
+  background:var(--red);color:#fff;font-size:10px;font-weight:700;
+  line-height:16px;text-align:center;padding:0 4px;margin-left:2px;
+}
+
+.reconnect{
+  position:fixed;top:0;left:0;right:0;z-index:999;
+  background:#ef4444;color:#fff;font-size:13px;font-weight:500;
+  text-align:center;padding:8px 16px;padding-top:calc(8px + var(--safe-t));
+  transform:translateY(-100%);transition:transform .3s ease;
+}
+.reconnect.show{transform:translateY(0)}
+
+.prev-bar{
+  display:flex;align-items:center;gap:4px;
+  padding:calc(6px + var(--safe-t)) 8px 6px;
+  background:var(--bg2);border-bottom:1px solid var(--bdr);
+}
+.btn{
+  background:none;border:none;font-size:14px;cursor:pointer;padding:8px 10px;
+  border-radius:8px;font-family:inherit;color:var(--accent);font-weight:500;
+}
+.btn:active{background:var(--accent-bg)}
+.btn-icon{font-size:18px;color:var(--fg2);font-weight:400}
+.prev-info{flex:1;text-align:center;font-size:13px;color:var(--fg2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.prev-port{color:var(--fg);font-weight:600}
+
+#frame{border:none;width:100%;background:var(--bg)}
+
+#view-list,#view-preview,#view-terminal,#view-debug{display:none}
+#view-list.active,#view-preview.active,#view-terminal.active,#view-debug.active{display:flex;flex-direction:column}
+#view-list.active{display:block}
+
+/* Terminal view */
+.term-bar{
+  display:flex;align-items:center;gap:4px;
+  padding:calc(6px + var(--safe-t)) 8px 6px;
+  background:var(--bg2);border-bottom:1px solid var(--bdr);
+}
+.term-info{flex:1;text-align:center;font-size:13px;color:var(--fg2);font-weight:500}
+.term-cmd{font-family:monospace;color:var(--fg);font-weight:600;font-size:12px}
+
+.term-output{
+  flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;
+  background:#0c0c0c;color:#ccc;
+  font-family:'SF Mono','Cascadia Code','Fira Code','Consolas','Monaco',monospace;
+  font-size:12px;line-height:1.5;
+  padding:12px;white-space:pre-wrap;word-wrap:break-word;
+}
+.term-output .t-err{color:#f87171}
+.term-output .t-sys{color:#60a5fa;font-style:italic}
+/* ANSI colors */
+.term-output .a-bold{font-weight:bold}
+.term-output .a-dim{opacity:0.7}
+.term-output .a-red{color:#f87171}.term-output .a-green{color:#4ade80}
+.term-output .a-yellow{color:#facc15}.term-output .a-blue{color:#60a5fa}
+.term-output .a-magenta{color:#c084fc}.term-output .a-cyan{color:#22d3ee}
+.term-output .a-white{color:#fafafa}.term-output .a-gray{color:#6b7280}
+.term-output .a-bright-red{color:#fca5a5}.term-output .a-bright-green{color:#86efac}
+.term-output .a-bright-yellow{color:#fde68a}.term-output .a-bright-blue{color:#93c5fd}
+.term-output .a-bright-magenta{color:#d8b4fe}.term-output .a-bright-cyan{color:#67e8f9}
+
+.term-empty{
+  display:flex;align-items:center;justify-content:center;flex:1;
+  color:var(--fg3);font-size:14px;text-align:center;padding:40px;
+}
+.term-empty code{background:var(--bg2);padding:2px 8px;border-radius:4px;font-size:12px}
+
+.term-status{
+  display:flex;align-items:center;gap:6px;padding:6px 12px;
+  background:#111;border-top:1px solid #222;font-size:11px;color:#666;
+}
+.term-status-dot{width:6px;height:6px;border-radius:50%}
+.term-status-dot.running{background:var(--green);animation:pulse 1.5s infinite}
+.term-status-dot.stopped{background:var(--red)}
+
+/* Debug view */
+.dbg-bar{
+  display:flex;align-items:center;gap:4px;
+  padding:calc(6px + var(--safe-t)) 12px 6px;
+  background:var(--bg2);border-bottom:1px solid var(--bdr);
+}
+.dbg-bar-title{flex:1;text-align:center;font-size:14px;font-weight:600}
+.dbg-scroll{flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;padding:12px 16px 80px}
+
+.dbg-summary{
+  display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:16px;
+}
+.dbg-stat{
+  background:var(--bg2);border:1px solid var(--bdr);border-radius:10px;
+  padding:12px;text-align:center;
+}
+.dbg-stat-num{font-size:24px;font-weight:700;font-variant-numeric:tabular-nums}
+.dbg-stat-num.has-errors{color:var(--red)}
+.dbg-stat-num.all-good{color:var(--green)}
+.dbg-stat-label{font-size:11px;color:var(--fg2);margin-top:2px;text-transform:uppercase;letter-spacing:0.5px}
+
+.dbg-section{margin-bottom:16px}
+.dbg-section-hdr{
+  font-size:12px;font-weight:700;color:var(--fg2);text-transform:uppercase;
+  letter-spacing:0.5px;margin-bottom:8px;display:flex;align-items:center;gap:6px;
+}
+.dbg-section-hdr .badge{
+  display:inline-block;min-width:18px;height:18px;border-radius:9px;
+  background:var(--red);color:#fff;font-size:10px;font-weight:700;
+  line-height:18px;text-align:center;padding:0 5px;
+}
+.dbg-section-hdr .badge-warn{background:#f59e0b}
+.dbg-section-hdr .badge-ok{background:var(--green)}
+
+.dbg-entry{
+  background:var(--bg2);border:1px solid var(--bdr);border-radius:8px;
+  padding:10px 12px;margin-bottom:6px;font-size:12px;line-height:1.5;
+}
+.dbg-entry-hdr{display:flex;align-items:center;gap:6px;margin-bottom:4px}
+.dbg-level{
+  font-size:10px;font-weight:700;text-transform:uppercase;padding:1px 5px;
+  border-radius:4px;flex-shrink:0;
+}
+.dbg-level-error{background:#fecaca;color:#991b1b}
+.dbg-level-warn{background:#fef3c7;color:#92400e}
+.dbg-level-info{background:#dbeafe;color:#1e40af}
+.dbg-level-log{background:var(--bg);color:var(--fg2)}
+@media(prefers-color-scheme:dark){
+  .dbg-level-error{background:#450a0a;color:#fca5a5}
+  .dbg-level-warn{background:#451a03;color:#fde68a}
+  .dbg-level-info{background:#172554;color:#93c5fd}
+  .dbg-level-log{background:var(--bg);color:var(--fg3)}
+}
+.dbg-time{font-size:10px;color:var(--fg3);margin-left:auto;flex-shrink:0}
+.dbg-msg{
+  font-family:'SF Mono','Cascadia Code','Fira Code','Consolas',monospace;
+  font-size:11px;color:var(--fg);word-break:break-all;
+}
+.dbg-url{font-size:10px;color:var(--fg3);margin-top:2px;word-break:break-all}
+.dbg-method{font-weight:700;margin-right:4px}
+.dbg-status{font-weight:700;margin-left:4px}
+.dbg-status-fail{color:var(--red)}
+.dbg-status-ok{color:var(--green)}
+.dbg-empty{text-align:center;padding:40px 24px;color:var(--fg3);font-size:13px}
+
+.dbg-health{
+  display:grid;grid-template-columns:1fr 1fr;gap:6px;
+}
+.dbg-health-item{
+  background:var(--bg2);border:1px solid var(--bdr);border-radius:8px;
+  padding:8px 10px;font-size:11px;
+}
+.dbg-health-label{color:var(--fg2);margin-bottom:2px}
+.dbg-health-val{font-weight:600;font-variant-numeric:tabular-nums}
+</style>
+</head>
+<body>
+
+<!-- App list view -->
+<div id="view-list" class="active">
+  <div class="hdr">
+    <h1>LocalPOV</h1>
+    <p>Development context bridge</p>
+  </div>
+  <div class="scan" id="scan-bar">
+    <span class="scan-dot"></span>
+    <span>Scanning for dev servers...</span>
+  </div>
+  <div class="apps" id="apps"></div>
+</div>
+
+<!-- Preview view -->
+<div id="view-preview">
+  <div class="prev-bar">
+    <button class="btn" id="btn-back">&#8249; Apps</button>
+    <div class="prev-info">:<span class="prev-port" id="p-port"></span> <span id="p-fw"></span></div>
+    <button class="btn btn-icon" id="btn-reload">&#8635;</button>
+  </div>
+  <iframe id="frame" sandbox="allow-scripts allow-forms allow-same-origin allow-popups allow-modals allow-popups-to-escape-sandbox"></iframe>
+</div>
+
+<!-- Terminal view -->
+<div id="view-terminal">
+  <div class="term-bar">
+    <button class="btn" id="btn-term-back">&#8249; Apps</button>
+    <div class="term-info"><span id="term-title">Terminal</span></div>
+    <button class="btn btn-icon" id="btn-term-clear" title="Clear">&#8416;</button>
+  </div>
+  <div id="term-output" class="term-output"></div>
+  <div id="term-empty" class="term-empty" style="display:none">
+    <div>
+      <p style="font-size:16px;margin-bottom:8px">No process running</p>
+      <p>Use <code>localpov run -- npm run dev</code></p>
+    </div>
+  </div>
+  <div id="term-status" class="term-status">
+    <span id="term-status-dot" class="term-status-dot stopped"></span>
+    <span id="term-status-text">Connecting...</span>
+  </div>
+</div>
+
+<!-- Debug view -->
+<div id="view-debug">
+  <div class="dbg-bar">
+    <div class="dbg-bar-title">Debug</div>
+    <button class="btn btn-icon" id="btn-dbg-refresh" title="Refresh">&#8635;</button>
+  </div>
+  <div class="dbg-scroll" id="dbg-scroll">
+    <!-- Summary cards -->
+    <div class="dbg-summary" id="dbg-summary">
+      <div class="dbg-stat"><div class="dbg-stat-num" id="dbg-errors">-</div><div class="dbg-stat-label">Console Errors</div></div>
+      <div class="dbg-stat"><div class="dbg-stat-num" id="dbg-net-fail">-</div><div class="dbg-stat-label">Network Fails</div></div>
+      <div class="dbg-stat"><div class="dbg-stat-num" id="dbg-warnings">-</div><div class="dbg-stat-label">Warnings</div></div>
+      <div class="dbg-stat"><div class="dbg-stat-num" id="dbg-net-slow">-</div><div class="dbg-stat-label">Slow Requests</div></div>
+    </div>
+
+    <!-- Console errors -->
+    <div class="dbg-section" id="dbg-console-section">
+      <div class="dbg-section-hdr">Console <span class="badge" id="dbg-console-badge" style="display:none">0</span></div>
+      <div id="dbg-console-list"></div>
+    </div>
+
+    <!-- Network errors -->
+    <div class="dbg-section" id="dbg-network-section">
+      <div class="dbg-section-hdr">Network <span class="badge" id="dbg-network-badge" style="display:none">0</span></div>
+      <div id="dbg-network-list"></div>
+    </div>
+
+    <!-- System health -->
+    <div class="dbg-section">
+      <div class="dbg-section-hdr">System</div>
+      <div class="dbg-health" id="dbg-health">
+        <div class="dbg-health-item"><div class="dbg-health-label">Memory</div><div class="dbg-health-val" id="dbg-mem">-</div></div>
+        <div class="dbg-health-item"><div class="dbg-health-label">Uptime</div><div class="dbg-health-val" id="dbg-uptime">-</div></div>
+        <div class="dbg-health-item"><div class="dbg-health-label">WS Clients</div><div class="dbg-health-val" id="dbg-ws">-</div></div>
+        <div class="dbg-health-item"><div class="dbg-health-label">Node</div><div class="dbg-health-val" id="dbg-node">-</div></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Reconnect banner -->
+<div id="reconnect" class="reconnect">Connection lost — reconnecting...</div>
+
+<!-- Tab bar -->
+<div class="tab-bar">
+  <button class="tab active" id="tab-apps" data-view="list">
+    <span class="tab-icon">&#9881;</span>
+    Apps
+  </button>
+  <button class="tab" id="tab-terminal" data-view="terminal">
+    <span class="tab-icon">&#9002;</span>
+    Terminal
+  </button>
+  <button class="tab" id="tab-debug" data-view="debug">
+    <span class="tab-icon">&#9888;</span>
+    <span>Debug <span class="tab-badge" id="dbg-tab-badge" style="display:none">0</span></span>
+  </button>
+</div>
+
+<script>
+(function() {
+  var apps = [];
+  var activePort = null;
+  var currentView = 'list'; // 'list', 'preview', 'terminal', 'debug'
+
+  // DOM refs
+  var $apps = document.getElementById('apps');
+  var $scan = document.getElementById('scan-bar');
+  var $conn = document.getElementById('term-status-text');
+  var $list = document.getElementById('view-list');
+  var $prev = document.getElementById('view-preview');
+  var $term = document.getElementById('view-terminal');
+  var $debug = document.getElementById('view-debug');
+  var $frame = document.getElementById('frame');
+  var $port = document.getElementById('p-port');
+  var $fw = document.getElementById('p-fw');
+  var $termOutput = document.getElementById('term-output');
+  var $termEmpty = document.getElementById('term-empty');
+  var $termTitle = document.getElementById('term-title');
+  var $termStatusDot = document.getElementById('term-status-dot');
+  var $termStatusText = document.getElementById('term-status-text');
+  var $tabApps = document.getElementById('tab-apps');
+  var $tabTerminal = document.getElementById('tab-terminal');
+  var $tabDebug = document.getElementById('tab-debug');
+
+  // ─── Hash routing ───
+  // #apps          → app list
+  // #terminal      → terminal view
+  // #preview/3000  → preview of port 3000
+  function navigate(hash, replace) {
+    if (replace) {
+      history.replaceState(null, '', '#' + hash);
+    } else {
+      location.hash = hash;
+    }
+  }
+
+  function handleRoute() {
+    var hash = (location.hash || '').replace(/^#/, '');
+    if (hash === 'terminal') {
+      showView('terminal');
+    } else if (hash === 'debug') {
+      showView('debug');
+    } else if (hash.indexOf('preview/') === 0) {
+      var port = parseInt(hash.split('/')[1], 10);
+      if (port > 0 && port < 65536) {
+        // Find framework name from current apps list
+        var fw = '';
+        for (var i = 0; i < apps.length; i++) {
+          if (apps[i].port === port) { fw = apps[i].framework; break; }
+        }
+        openPreview(port, fw, true); // true = from hash, don't push again
+      } else {
+        showView('list');
+      }
+    } else {
+      showView('list');
+    }
+  }
+
+  window.addEventListener('hashchange', handleRoute);
+
+  // ─── View management ───
+  function showView(name) {
+    currentView = name;
+    $list.classList.toggle('active', name === 'list');
+    $prev.classList.toggle('active', name === 'preview');
+    $term.classList.toggle('active', name === 'terminal');
+    $debug.classList.toggle('active', name === 'debug');
+    $tabApps.classList.toggle('active', name === 'list' || name === 'preview');
+    $tabTerminal.classList.toggle('active', name === 'terminal');
+    $tabDebug.classList.toggle('active', name === 'debug');
+    if (name === 'preview') {
+      requestAnimationFrame(function() { requestAnimationFrame(sizeFrame); });
+    }
+    if (name === 'terminal') {
+      scrollTerminal();
+    }
+    if (name === 'debug') {
+      fetchDebugData();
+    }
+  }
+
+  // Tab bar
+  $tabApps.addEventListener('click', function() {
+    if (currentView !== 'list' && currentView !== 'preview') {
+      if (activePort) {
+        navigate('preview/' + activePort);
+      } else {
+        navigate('apps');
+      }
+    }
+  });
+  $tabTerminal.addEventListener('click', function() {
+    navigate('terminal');
+  });
+  $tabDebug.addEventListener('click', function() {
+    navigate('debug');
+  });
+
+  // Set iframe height
+  function sizeFrame() {
+    var bar = document.querySelector('.prev-bar');
+    var tabBar = document.querySelector('.tab-bar');
+    if (bar && $frame) {
+      $frame.style.height = (window.innerHeight - bar.offsetHeight - tabBar.offsetHeight) + 'px';
+    }
+  }
+  window.addEventListener('resize', sizeFrame);
+
+  // Navigation
+  document.getElementById('btn-back').addEventListener('click', goBack);
+  document.getElementById('btn-reload').addEventListener('click', doReload);
+  document.getElementById('btn-term-back').addEventListener('click', function() { navigate('apps'); });
+  document.getElementById('btn-term-clear').addEventListener('click', function() {
+    $termOutput.innerHTML = '';
+  });
+
+  // ─── App list ───
+  function fetchApps() {
+    var xhr = new XMLHttpRequest();
+    xhr.open('GET', 'api/apps', true);
+    xhr.timeout = 3000;
+    xhr.onload = function() {
+      if (xhr.status === 200) {
+        try {
+          var data = JSON.parse(xhr.responseText);
+          renderApps(data.apps || []);
+        } catch(e) {}
+      }
+    };
+    xhr.send();
+  }
+
+  var $reconnect = document.getElementById('reconnect');
+
+  function renderApps(list) {
+    apps = list;
+    $scan.style.display = list.length > 0 ? 'none' : 'flex';
+
+    if (list.length === 0) {
+      $apps.innerHTML = '<div class="empty"><h2>No dev servers found</h2><p>Run <code>npm run dev</code> or start any<br>local dev server</p></div>';
+      return;
+    }
+
+    var html = '';
+    for (var i = 0; i < list.length; i++) {
+      var a = list[i];
+      html += '<div class="card" data-port="' + a.port + '" data-fw="' + esc(a.framework) + '">'
+        + '<span class="dot"></span>'
+        + '<div class="card-info">'
+        + '<div class="card-port">localhost:' + a.port + '</div>'
+        + '<div class="card-fw">' + esc(a.framework) + '</div>'
+        + '</div>'
+        + '<span class="card-arr">\u203A</span>'
+        + '</div>';
+    }
+    $apps.innerHTML = html;
+
+    var cards = $apps.querySelectorAll('.card');
+    for (var j = 0; j < cards.length; j++) {
+      cards[j].addEventListener('click', onCardClick);
+    }
+  }
+
+  function esc(s) {
+    var d = document.createElement('div');
+    d.textContent = s;
+    return d.innerHTML;
+  }
+
+  function onCardClick() {
+    var port = parseInt(this.getAttribute('data-port'), 10);
+    var fw = this.getAttribute('data-fw') || '';
+    navigate('preview/' + port);
+  }
+
+  function openPreview(port, fw, fromHash) {
+    activePort = port;
+    $port.textContent = port;
+    $fw.textContent = fw ? ' \u00B7 ' + fw : '';
+
+    // Set per-session port cookie via switch API
+    var xhr = new XMLHttpRequest();
+    xhr.open('GET', 'api/switch?port=' + port, true);
+    xhr.timeout = 5000;
+    xhr.onload = function() {
+      $frame.src = '../?_lpov=' + Date.now();
+      showView('preview');
+    };
+    xhr.onerror = xhr.ontimeout = function() {
+      $frame.src = '../?_lpov=' + Date.now();
+      showView('preview');
+    };
+    xhr.send();
+
+    if (!fromHash) navigate('preview/' + port);
+  }
+
+  function goBack() {
+    activePort = null;
+    $frame.src = 'about:blank';
+    navigate('apps');
+    fetchApps();
+  }
+
+  function doReload() {
+    $frame.src = '../?_lpov=' + Date.now();
+  }
+
+  fetchApps();
+  setInterval(function() {
+    if (currentView === 'list') fetchApps();
+  }, 3000);
+
+  // Handle initial route after first fetch
+  setTimeout(handleRoute, 300);
+
+  // ─── Terminal WebSocket ───
+  var termWs = null;
+  var termConnected = false;
+  var autoScroll = true;
+
+  function connectTerminal() {
+    var proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    var wsUrl = proto + '//' + location.host + '/__localpov__/ws/terminal';
+
+    try { termWs = new WebSocket(wsUrl); } catch(e) {
+      setTimeout(connectTerminal, 3000);
+      return;
+    }
+
+    termWs.onopen = function() {
+      termConnected = true;
+      setTermStatus(true, 'Connected');
+    };
+
+    termWs.onmessage = function(ev) {
+      try {
+        var msg = JSON.parse(ev.data);
+        if (msg.type === 'history') {
+          $termOutput.innerHTML = '';
+          if (msg.lines && msg.lines.length > 0) {
+            $termEmpty.style.display = 'none';
+            $termOutput.style.display = 'block';
+            for (var i = 0; i < msg.lines.length; i++) {
+              appendTermLine(msg.lines[i]);
+            }
+            scrollTerminal();
+          } else {
+            $termEmpty.style.display = 'flex';
+            $termOutput.style.display = 'none';
+          }
+        } else if (msg.type === 'data') {
+          $termEmpty.style.display = 'none';
+          $termOutput.style.display = 'block';
+          appendTermLine(msg);
+          scrollTerminal();
+        } else if (msg.type === 'status') {
+          if (!msg.running) {
+            $termEmpty.style.display = 'flex';
+            $termOutput.style.display = 'none';
+            setTermStatus(false, 'No process');
+          }
+        }
+      } catch(e) {}
+    };
+
+    termWs.onclose = function() {
+      termConnected = false;
+      setTermStatus(false, 'Disconnected');
+      setTimeout(connectTerminal, 3000);
+    };
+
+    termWs.onerror = function() {};
+  }
+
+  function setTermStatus(running, text) {
+    $termStatusDot.className = 'term-status-dot ' + (running ? 'running' : 'stopped');
+    $termStatusText.textContent = text;
+  }
+
+  function scrollTerminal() {
+    if (autoScroll) {
+      $termOutput.scrollTop = $termOutput.scrollHeight;
+    }
+  }
+
+  // Track if user scrolled up manually
+  $termOutput.addEventListener('scroll', function() {
+    var atBottom = $termOutput.scrollHeight - $termOutput.scrollTop - $termOutput.clientHeight < 40;
+    autoScroll = atBottom;
+  });
+
+  // ─── ANSI parser ───
+  var ANSI_COLORS = {
+    30:'a-gray',31:'a-red',32:'a-green',33:'a-yellow',
+    34:'a-blue',35:'a-magenta',36:'a-cyan',37:'a-white',
+    90:'a-gray',91:'a-bright-red',92:'a-bright-green',93:'a-bright-yellow',
+    94:'a-bright-blue',95:'a-bright-magenta',96:'a-bright-cyan',97:'a-white'
+  };
+
+  function ansiToHtml(text) {
+    var result = '';
+    var i = 0;
+    var openSpans = 0;
+
+    while (i < text.length) {
+      // ANSI escape sequence
+      if (text.charCodeAt(i) === 27 && text[i+1] === '[') {
+        var j = i + 2;
+        while (j < text.length && text[j] !== 'm' && j - i < 20) j++;
+        if (j < text.length && text[j] === 'm') {
+          var codes = text.slice(i+2, j).split(';');
+          // Close previous spans on reset
+          for (var c = 0; c < codes.length; c++) {
+            var code = parseInt(codes[c], 10);
+            if (code === 0) {
+              while (openSpans > 0) { result += '</span>'; openSpans--; }
+            } else if (code === 1) {
+              result += '<span class="a-bold">'; openSpans++;
+            } else if (code === 2) {
+              result += '<span class="a-dim">'; openSpans++;
+            } else if (ANSI_COLORS[code]) {
+              result += '<span class="' + ANSI_COLORS[code] + '">'; openSpans++;
+            }
+          }
+          i = j + 1;
+          continue;
+        }
+      }
+
+      // Strip other escape sequences (cursor movement, etc.)
+      if (text.charCodeAt(i) === 27 && text[i+1] === '[') {
+        var k = i + 2;
+        while (k < text.length && !(/[A-Za-z]/).test(text[k]) && k - i < 20) k++;
+        if (k < text.length) { i = k + 1; continue; }
+      }
+
+      // Carriage return (handle \r for progress bars)
+      if (text[i] === '\r') { i++; continue; }
+
+      // HTML escape
+      if (text[i] === '<') result += '&lt;';
+      else if (text[i] === '>') result += '&gt;';
+      else if (text[i] === '&') result += '&amp;';
+      else result += text[i];
+      i++;
+    }
+
+    while (openSpans > 0) { result += '</span>'; openSpans--; }
+    return result;
+  }
+
+  function appendTermLine(line) {
+    var span = document.createElement('span');
+    if (line.type === 'stderr' || line.stream === 'stderr') {
+      span.className = 't-err';
+    } else if (line.type === 'system' || line.stream === 'system') {
+      span.className = 't-sys';
+    }
+    span.innerHTML = ansiToHtml(line.text || '');
+    $termOutput.appendChild(span);
+
+    // Limit DOM nodes (keep last 2000 elements)
+    while ($termOutput.childNodes.length > 2000) {
+      $termOutput.removeChild($termOutput.firstChild);
+    }
+  }
+
+  // Size terminal output
+  function sizeTerminal() {
+    var bar = document.querySelector('.term-bar');
+    var status = document.querySelector('.term-status');
+    var tabBar = document.querySelector('.tab-bar');
+    if (bar && $termOutput) {
+      var h = window.innerHeight - bar.offsetHeight - status.offsetHeight - tabBar.offsetHeight;
+      $termOutput.style.height = h + 'px';
+      $termEmpty.style.height = h + 'px';
+    }
+  }
+  window.addEventListener('resize', sizeTerminal);
+  requestAnimationFrame(sizeTerminal);
+
+  // Start terminal connection
+  connectTerminal();
+
+  // Check terminal status periodically
+  setInterval(function() {
+    var xhr = new XMLHttpRequest();
+    xhr.open('GET', 'api/terminal', true);
+    xhr.timeout = 3000;
+    xhr.onload = function() {
+      try {
+        var data = JSON.parse(xhr.responseText);
+        if (data.command) {
+          $termTitle.innerHTML = '<span class="term-cmd">' + esc(data.command) + '</span>';
+          setTermStatus(data.running, data.running ? 'Running' : 'Exited (' + data.exitCode + ')');
+        }
+      } catch(e) {}
+    };
+    xhr.send();
+  }, 5000);
+
+  // ─── Debug panel ───
+  var dbgTotalErrors = 0;
+
+  document.getElementById('btn-dbg-refresh').addEventListener('click', fetchDebugData);
+
+  function fetchDebugData() {
+    fetchJSON('api/browser', renderBrowserSummary);
+    fetchJSON('api/browser?source=console', function(data) { renderConsoleEntries(data.entries || []); });
+    fetchJSON('api/browser?source=network', function(data) { renderNetworkEntries(data.entries || []); });
+    fetchJSON('api/health', renderHealth);
+  }
+
+  function fetchJSON(url, cb) {
+    var xhr = new XMLHttpRequest();
+    xhr.open('GET', url, true);
+    xhr.timeout = 3000;
+    xhr.onload = function() {
+      if (xhr.status === 200) {
+        try { cb(JSON.parse(xhr.responseText)); } catch(e) {}
+      }
+    };
+    xhr.send();
+  }
+
+  function renderBrowserSummary(data) {
+    var ce = data.console || {};
+    var ne = data.network || {};
+
+    var errCount = ce.errors || 0;
+    var warnCount = ce.warnings || 0;
+    var netFail = ne.failed || 0;
+    var netSlow = ne.slow || 0;
+
+    setStatNum('dbg-errors', errCount, errCount > 0);
+    setStatNum('dbg-warnings', warnCount, warnCount > 0);
+    setStatNum('dbg-net-fail', netFail, netFail > 0);
+    setStatNum('dbg-net-slow', netSlow, netSlow > 0);
+
+    // Tab badge
+    dbgTotalErrors = errCount + netFail;
+    var $badge = document.getElementById('dbg-tab-badge');
+    if (dbgTotalErrors > 0) {
+      $badge.textContent = dbgTotalErrors > 99 ? '99+' : dbgTotalErrors;
+      $badge.style.display = 'inline-block';
+    } else {
+      $badge.style.display = 'none';
+    }
+  }
+
+  function setStatNum(id, num, isError) {
+    var el = document.getElementById(id);
+    el.textContent = num;
+    el.className = 'dbg-stat-num' + (isError ? ' has-errors' : (num === 0 ? ' all-good' : ''));
+  }
+
+  function renderConsoleEntries(entries) {
+    var $list = document.getElementById('dbg-console-list');
+    var $badge = document.getElementById('dbg-console-badge');
+
+    var errors = entries.filter(function(e) { return e.level === 'error' || e.level === 'warn'; });
+
+    if (errors.length > 0) {
+      $badge.textContent = errors.length;
+      $badge.style.display = 'inline-block';
+      $badge.className = 'badge' + (errors.some(function(e) { return e.level === 'error'; }) ? '' : ' badge-warn');
+    } else {
+      $badge.style.display = 'none';
+    }
+
+    // Show last 30 entries (most recent first)
+    var show = entries.slice(-30).reverse();
+    if (show.length === 0) {
+      $list.innerHTML = '<div class="dbg-empty">No console output captured yet.<br>Open your app through the proxy to start capturing.</div>';
+      return;
+    }
+
+    var html = '';
+    for (var i = 0; i < show.length; i++) {
+      var e = show[i];
+      var lvl = e.level || 'log';
+      var cls = 'dbg-level dbg-level-' + (lvl === 'debug' ? 'log' : lvl);
+      html += '<div class="dbg-entry">'
+        + '<div class="dbg-entry-hdr">'
+        + '<span class="' + cls + '">' + lvl + '</span>'
+        + '<span class="dbg-time">' + formatAge(e.ts) + '</span>'
+        + '</div>'
+        + '<div class="dbg-msg">' + esc(String(e.message || '').slice(0, 300)) + '</div>'
+        + (e.source ? '<div class="dbg-url">' + esc(e.source) + '</div>' : '')
+        + (e.url ? '<div class="dbg-url">' + esc(e.url) + '</div>' : '')
+        + '</div>';
+    }
+    $list.innerHTML = html;
+  }
+
+  function renderNetworkEntries(entries) {
+    var $list = document.getElementById('dbg-network-list');
+    var $badge = document.getElementById('dbg-network-badge');
+
+    var failures = entries.filter(function(e) { return e.status >= 400 || e.error; });
+
+    if (failures.length > 0) {
+      $badge.textContent = failures.length;
+      $badge.style.display = 'inline-block';
+    } else {
+      $badge.style.display = 'none';
+    }
+
+    var show = entries.slice(-30).reverse();
+    if (show.length === 0) {
+      $list.innerHTML = '<div class="dbg-empty">No network requests captured yet.</div>';
+      return;
+    }
+
+    var html = '';
+    for (var i = 0; i < show.length; i++) {
+      var e = show[i];
+      var isFail = e.status >= 400 || e.error;
+      var statusCls = isFail ? 'dbg-status dbg-status-fail' : 'dbg-status dbg-status-ok';
+      html += '<div class="dbg-entry">'
+        + '<div class="dbg-entry-hdr">'
+        + '<span class="dbg-method">' + esc(e.method || 'GET') + '</span>'
+        + '<span class="' + statusCls + '">' + (e.status || 0) + '</span>'
+        + '<span class="dbg-time">' + (e.duration || 0) + 'ms &middot; ' + formatAge(e.ts) + '</span>'
+        + '</div>'
+        + '<div class="dbg-msg">' + esc(String(e.url || '').slice(0, 200)) + '</div>'
+        + (e.error ? '<div class="dbg-url" style="color:var(--red)">' + esc(e.error) + '</div>' : '')
+        + (e.responseBody ? '<div class="dbg-url">' + esc(String(e.responseBody).slice(0, 200)) + '</div>' : '')
+        + '</div>';
+    }
+    $list.innerHTML = html;
+  }
+
+  function renderHealth(data) {
+    document.getElementById('dbg-mem').textContent = (data.memory || 0) + '% (' + (data.heapMB || 0) + 'MB heap)';
+    document.getElementById('dbg-uptime').textContent = formatDuration(data.uptime || 0);
+    var ws = data.wsClients || {};
+    document.getElementById('dbg-ws').textContent = (ws.browser || 0) + ' browser, ' + (ws.terminal || 0) + ' terminal';
+    document.getElementById('dbg-node').textContent = (data.node || '-') + ' / ' + (data.platform || '-');
+  }
+
+  function formatAge(ts) {
+    if (!ts) return '';
+    var sec = Math.floor((Date.now() - ts) / 1000);
+    if (sec < 5) return 'just now';
+    if (sec < 60) return sec + 's ago';
+    if (sec < 3600) return Math.floor(sec / 60) + 'm ago';
+    return Math.floor(sec / 3600) + 'h ago';
+  }
+
+  function formatDuration(sec) {
+    if (sec < 60) return sec + 's';
+    if (sec < 3600) return Math.floor(sec / 60) + 'm ' + (sec % 60) + 's';
+    return Math.floor(sec / 3600) + 'h ' + Math.floor((sec % 3600) / 60) + 'm';
+  }
+
+  // Auto-refresh debug view every 2s
+  setInterval(function() {
+    if (currentView === 'debug') fetchDebugData();
+  }, 2000);
+
+  // Also poll browser summary in background for tab badge
+  setInterval(function() {
+    if (currentView !== 'debug') {
+      fetchJSON('api/browser', function(data) {
+        var ce = data.console || {};
+        var ne = data.network || {};
+        var total = (ce.errors || 0) + (ne.failed || 0);
+        var $badge = document.getElementById('dbg-tab-badge');
+        if (total > 0) {
+          $badge.textContent = total > 99 ? '99+' : total;
+          $badge.style.display = 'inline-block';
+        } else {
+          $badge.style.display = 'none';
+        }
+      });
+    }
+  }, 5000);
+
+})();
+</script>
+</body>
+</html>

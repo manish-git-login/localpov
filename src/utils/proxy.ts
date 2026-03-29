@@ -1,0 +1,384 @@
+import http from 'http';
+import httpProxy from 'http-proxy';
+import WebSocket from 'ws';
+import path from 'path';
+import fs from 'fs';
+import os from 'os';
+import { getInjectScript } from './inject';
+import { TerminalCapture } from '../collectors/terminal';
+import { BrowserCapture } from '../collectors/browser-capture';
+
+const DASHBOARD_PREFIX = '/__localpov__';
+const DASHBOARD_DIR = path.join(__dirname, '..', '..', 'dashboard');
+
+const MIME: Record<string, string> = {
+  '.html': 'text/html; charset=utf-8',
+  '.js': 'application/javascript',
+  '.css': 'text/css',
+  '.svg': 'image/svg+xml',
+  '.png': 'image/png',
+  '.json': 'application/json',
+};
+
+const IFRAME_BLOCKED = ['x-frame-options', 'content-security-policy', 'content-security-policy-report-only'];
+
+interface AppInfo {
+  port: number;
+  framework: string;
+}
+
+interface CreateServerOptions {
+  targetPort: number;
+  listenPort: number;
+  getApps?: () => AppInfo[];
+  onLog?: (level: string, message: string | number) => void;
+  onReady?: () => void;
+  terminal?: TerminalCapture | null;
+  browserCapture?: BrowserCapture | null;
+}
+
+interface ProxyServer {
+  server: http.Server;
+  readonly currentTarget: number;
+  setTarget(port: number): void;
+  close(): void;
+}
+
+function parseCookies(str: string | undefined): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const part of (str || '').split(';')) {
+    const idx = part.indexOf('=');
+    if (idx < 0) continue;
+    const k = part.slice(0, idx).trim();
+    const v = part.slice(idx + 1).trim();
+    try { out[k] = decodeURIComponent(v); } catch { out[k] = v; }
+  }
+  return out;
+}
+
+export function createServer({ targetPort, listenPort, getApps, onLog, onReady, terminal, browserCapture }: CreateServerOptions): ProxyServer {
+  let defaultTarget = targetPort;
+
+  const proxy = httpProxy.createProxyServer({ ws: true, xfwd: true, changeOrigin: true });
+
+  const injectWsUrl = `ws://\${req_host}:${listenPort}/__localpov__/ws/browser`;
+  const injectSnippet = getInjectScript(injectWsUrl.replace('${req_host}', '"+location.hostname+"'));
+
+  proxy.on('proxyRes', (proxyRes: http.IncomingMessage, req: http.IncomingMessage, res: http.ServerResponse) => {
+    for (const h of IFRAME_BLOCKED) delete proxyRes.headers[h];
+
+    const ct = proxyRes.headers['content-type'] || '';
+    if (!ct.includes('text/html')) return;
+
+    const origWrite = res.write;
+    const origEnd = res.end;
+    const chunks: Buffer[] = [];
+
+    delete proxyRes.headers['content-length'];
+
+    res.write = function(chunk: unknown): boolean {
+      chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as string));
+      return true;
+    } as typeof res.write;
+
+    res.end = function(chunk?: unknown): http.ServerResponse {
+      if (chunk) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as string));
+      let body = Buffer.concat(chunks).toString('utf8');
+
+      if (body.includes('</head>')) {
+        body = body.replace('</head>', injectSnippet + '</head>');
+      } else if (body.includes('</body>')) {
+        body = body.replace('</body>', injectSnippet + '</body>');
+      } else if (body.includes('<html') || body.includes('<!DOCTYPE') || body.includes('<!doctype')) {
+        body += injectSnippet;
+      }
+
+      origWrite.call(res, body, 'utf8');
+      (origEnd as Function).call(res);
+      return res;
+    } as typeof res.end;
+  });
+
+  let _lastProxyError = '';
+  let _lastProxyErrorTime = 0;
+  proxy.on('error', (err: Error, req: http.IncomingMessage, res: http.ServerResponse | import('net').Socket) => {
+    // Suppress repeated identical errors (e.g. ECONNREFUSED spam when target is down)
+    const now = Date.now();
+    if (err.message === _lastProxyError && now - _lastProxyErrorTime < 5000) {
+      // Skip logging, still serve error page
+    } else {
+      _lastProxyError = err.message;
+      _lastProxyErrorTime = now;
+      if (onLog) onLog('error', `Proxy error: ${err.message}`);
+    }
+    if (res && 'writeHead' in res && !('headersSent' in res && (res as http.ServerResponse).headersSent)) {
+      (res as http.ServerResponse).writeHead(502, { 'Content-Type': 'text/html; charset=utf-8' });
+      (res as http.ServerResponse).end(errorPage(defaultTarget));
+    }
+  });
+
+  function resolvePort(req: http.IncomingMessage): number {
+    const urlObj = new URL(req.url || '/', 'http://localhost');
+    const cookies = parseCookies(req.headers.cookie);
+
+    const _port = urlObj.searchParams.get('_port');
+    if (_port) {
+      const p = parseInt(_port, 10);
+      if (p > 0 && p < 65536) return p;
+    }
+
+    if (cookies.lpov_port) {
+      const p = parseInt(cookies.lpov_port, 10);
+      if (p > 0 && p < 65536) return p;
+    }
+
+    return defaultTarget;
+  }
+
+  function setPortCookie(res: http.ServerResponse, port: number, extraHeaders?: Record<string, string>): Record<string, string> {
+    const headers: Record<string, string> = Object.assign({}, extraHeaders || {});
+    headers['Set-Cookie'] = `lpov_port=${port}; Path=/; SameSite=Strict`;
+    return headers;
+  }
+
+  const termClients = new Set<WebSocket>();
+  const browserClients = new Set<WebSocket>();
+
+  const server = http.createServer((req, res) => {
+    const urlObj = new URL(req.url || '/', 'http://localhost');
+
+    if (urlObj.pathname === '/__localpov__/api/apps') {
+      const cookies = parseCookies(req.headers.cookie);
+      const sessionPort = parseInt(cookies.lpov_port, 10) || defaultTarget;
+      return json(res, { apps: getApps ? getApps() : [], currentTarget: sessionPort });
+    }
+
+    if (urlObj.pathname === '/__localpov__/api/switch') {
+      const port = parseInt(urlObj.searchParams.get('port') || '', 10);
+      if (port > 0 && port < 65536) {
+        if (onLog) onLog('switch', port);
+        res.writeHead(200, setPortCookie(res, port, {
+          'Content-Type': 'application/json',
+          'Cache-Control': 'no-cache',
+        }));
+        return res.end(JSON.stringify({ ok: true, target: port }));
+      }
+      return json(res, { error: 'Invalid port' }, 400);
+    }
+
+    if (urlObj.pathname === '/__localpov__/api/ping') {
+      return json(res, { ok: true, uptime: process.uptime() | 0 });
+    }
+
+    if (urlObj.pathname === '/__localpov__/api/terminal') {
+      if (terminal) {
+        return json(res, terminal.getStatus());
+      }
+      return json(res, { running: false, command: null });
+    }
+
+    if (urlObj.pathname === '/__localpov__/api/browser') {
+      if (!browserCapture) return json(res, { console: [], network: [], summary: null });
+      const source = urlObj.searchParams.get('source') || 'summary';
+      if (source === 'console') {
+        return json(res, { entries: browserCapture.getConsoleEntries({ limit: 100 }) });
+      }
+      if (source === 'network') {
+        return json(res, { entries: browserCapture.getNetworkEntries({ limit: 100 }) });
+      }
+      return json(res, browserCapture.getSummary());
+    }
+
+    if (urlObj.pathname === '/__localpov__/api/health') {
+      const mem = process.memoryUsage();
+      return json(res, {
+        memory: Math.round((1 - os.freemem() / os.totalmem()) * 100),
+        heapMB: Math.round(mem.heapUsed / 1024 / 1024),
+        uptime: Math.floor(process.uptime()),
+        platform: process.platform,
+        node: process.version,
+        wsClients: { browser: browserClients.size, terminal: termClients.size },
+      });
+    }
+
+    if (urlObj.pathname === '/__localpov__/api/debug') {
+      if (process.env.NODE_ENV === 'production' && !process.env.LOCALPOV_DEBUG) {
+        return json(res, { error: 'Not found' }, 404);
+      }
+      return json(res, {
+        defaultTarget,
+        dashboardReady: fs.existsSync(path.join(DASHBOARD_DIR, 'index.html')),
+        platform: process.platform,
+        nodeVersion: process.version,
+        apps: getApps ? getApps() : [],
+      });
+    }
+
+    if (urlObj.pathname.startsWith(DASHBOARD_PREFIX)) {
+      return serveDashboard(urlObj.pathname, res);
+    }
+
+    // Serve an empty favicon to prevent 502 spam when target is down
+    if (urlObj.pathname === '/favicon.ico') {
+      res.writeHead(204);
+      return res.end();
+    }
+
+    const port = resolvePort(req);
+
+    if (urlObj.searchParams.get('_port')) {
+      const cleanUrl = (req.url || '/').replace(/[?&]_port=\d+/, '').replace(/\?$/, '') || '/';
+      res.writeHead(302, setPortCookie(res, port, { Location: cleanUrl }));
+      return res.end();
+    }
+
+    proxy.web(req, res, { target: `http://127.0.0.1:${port}` });
+  });
+
+  const termWss = new WebSocket.Server({ noServer: true });
+  const MAX_WS_CLIENTS = 50;
+  const browserWss = new WebSocket.Server({ noServer: true });
+
+  if (terminal) {
+    terminal.on('data', (data: { type: string; text: string; ts: number }) => {
+      const msg = JSON.stringify({ type: 'data', stream: data.type, text: data.text, ts: data.ts });
+      for (const ws of termClients) {
+        if (ws.readyState === WebSocket.OPEN) ws.send(msg);
+      }
+    });
+  }
+
+  server.on('upgrade', (req: http.IncomingMessage, socket: import('net').Socket, head: Buffer) => {
+    const upgradeUrl = new URL(req.url || '/', 'http://localhost');
+
+    if (upgradeUrl.pathname === '/__localpov__/ws/browser') {
+      if (browserClients.size >= MAX_WS_CLIENTS) {
+        socket.write('HTTP/1.1 429 Too Many Connections\r\n\r\n');
+        socket.destroy();
+        return;
+      }
+      browserWss.handleUpgrade(req, socket, head, (ws) => {
+        browserClients.add(ws);
+        ws.on('message', (data: WebSocket.RawData) => {
+          if (browserCapture) {
+            try {
+              const str = data.toString();
+              if (str.length > 65536) return;
+              browserCapture.handleMessage(str);
+            } catch (e: unknown) {
+              const msg = e instanceof Error ? e.message : String(e);
+              if (onLog) onLog('warn', `Browser WS message error: ${msg}`);
+            }
+          }
+        });
+        ws.on('close', () => browserClients.delete(ws));
+        ws.on('error', (e: Error) => {
+          if (onLog) onLog('warn', `Browser WS error: ${e.message}`);
+          browserClients.delete(ws);
+        });
+      });
+      return;
+    }
+
+    if (upgradeUrl.pathname === '/__localpov__/ws/terminal') {
+      if (termClients.size >= MAX_WS_CLIENTS) {
+        socket.write('HTTP/1.1 429 Too Many Connections\r\n\r\n');
+        socket.destroy();
+        return;
+      }
+      termWss.handleUpgrade(req, socket, head, (ws) => {
+        termClients.add(ws);
+
+        if (terminal) {
+          const history = terminal.getBuffer();
+          ws.send(JSON.stringify({ type: 'history', lines: history }));
+        } else {
+          ws.send(JSON.stringify({ type: 'status', running: false }));
+        }
+
+        ws.on('message', (data: WebSocket.RawData) => {
+          if (!terminal || !terminal.interactive) return;
+          try {
+            const str = data.toString();
+            if (str.length > 4096) return;
+            const msg = JSON.parse(str);
+            if (msg.type === 'input' && typeof msg.text === 'string') {
+              terminal.write(msg.text.slice(0, 1024));
+            }
+          } catch (e: unknown) {
+            const eMsg = e instanceof Error ? e.message : String(e);
+            if (onLog) onLog('warn', `Terminal WS message error: ${eMsg}`);
+          }
+        });
+
+        ws.on('close', () => termClients.delete(ws));
+        ws.on('error', (e: Error) => {
+          if (onLog) onLog('warn', `Terminal WS error: ${e.message}`);
+          termClients.delete(ws);
+        });
+      });
+      return;
+    }
+
+    if (req.url && req.url.startsWith(DASHBOARD_PREFIX)) return;
+
+    const port = resolvePort(req);
+    proxy.ws(req, socket, head, { target: `http://127.0.0.1:${port}` });
+  });
+
+  server.on('error', (err: NodeJS.ErrnoException) => {
+    if (err.code === 'EADDRINUSE') {
+      if (onLog) onLog('fatal', `Port ${listenPort} already in use. Is another instance running?`);
+    }
+    if (onLog) onLog('error', `Server error: ${err.message}`);
+  });
+
+  server.listen(listenPort, '0.0.0.0', () => { if (onReady) onReady(); });
+
+  function serveDashboard(pathname: string, res: http.ServerResponse): void {
+    let filePath = pathname.replace(DASHBOARD_PREFIX, '') || '/';
+    if (filePath === '' || filePath === '/') filePath = '/index.html';
+    const fullPath = path.join(DASHBOARD_DIR, filePath);
+    if (!fullPath.startsWith(DASHBOARD_DIR)) { res.writeHead(403); res.end(); return; }
+    fs.readFile(fullPath, (err, data) => {
+      if (err) { res.writeHead(404); res.end('Not found'); return; }
+      const ext = path.extname(filePath);
+      res.writeHead(200, { 'Content-Type': MIME[ext] || 'application/octet-stream', 'Cache-Control': 'no-cache' });
+      res.end(data);
+    });
+  }
+
+  function json(res: http.ServerResponse, data: unknown, status: number = 200): void {
+    res.writeHead(status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-cache' });
+    res.end(JSON.stringify(data));
+  }
+
+  return {
+    server,
+    get currentTarget(): number { return defaultTarget; },
+    setTarget(port: number): void { defaultTarget = port; },
+    close(): void {
+      for (const ws of browserClients) {
+        try { ws.close(1001, 'Server shutting down'); } catch {}
+      }
+      for (const ws of termClients) {
+        try { ws.close(1001, 'Server shutting down'); } catch {}
+      }
+      browserClients.clear();
+      termClients.clear();
+      server.close();
+      proxy.close();
+    },
+  };
+}
+
+function errorPage(port: number): string {
+  return `<!DOCTYPE html><html><head><meta name="viewport" content="width=device-width,initial-scale=1">
+<style>*{margin:0;box-sizing:border-box}body{font-family:system-ui;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px}
+.b{text-align:center;max-width:320px}h2{font-size:18px;margin-bottom:8px}p{font-size:14px;line-height:1.5;margin-bottom:6px;opacity:.7}
+code{background:#f0f0f0;padding:2px 8px;border-radius:4px;font-size:13px}
+button{margin-top:16px;padding:10px 28px;font-size:14px;border-radius:8px;border:1px solid #ddd;background:#fff;cursor:pointer;font-family:inherit}
+@media(prefers-color-scheme:dark){body{background:#0a0a0a;color:#eee}code{background:#1a1a1a}button{background:#1a1a1a;border-color:#333;color:#ccc}}</style>
+</head><body><div class="b"><h2>App not responding</h2><p><code>localhost:${port}</code></p><p>Is your dev server running?</p>
+<button onclick="location.reload()">Retry</button><script>setTimeout(()=>location.reload(),5000)</script></div></body></html>`;
+}

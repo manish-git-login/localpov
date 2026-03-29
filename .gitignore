@@ -1,0 +1,32 @@
+node_modules/
+.DS_Store
+*.log
+
+# Runtime data (stored in ~/.localpov/ but just in case)
+.localpov/
+sessions/
+browser/
+
+# Environment & secrets
+.env
+.env.*
+!.env.example
+
+# OS
+Thumbs.db
+Desktop.ini
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Build artifacts
+dist/
+coverage/
+
+# Local tool configs
+.claude/
+.mcp.json
+/_future
