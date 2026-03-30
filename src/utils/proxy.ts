@@ -4,6 +4,7 @@ import WebSocket from 'ws';
 import path from 'path';
 import fs from 'fs';
 import os from 'os';
+import zlib from 'zlib';
 import { getInjectScript } from './inject';
 import { TerminalCapture } from '../collectors/terminal';
 import { BrowserCapture } from '../collectors/browser-capture';
@@ -58,6 +59,20 @@ function parseCookies(str: string | undefined): Record<string, string> {
   return out;
 }
 
+function getHeaderValue(value: string | string[] | undefined): string {
+  if (!value) return '';
+  return Array.isArray(value) ? value.join(', ') : value;
+}
+
+function decodeBody(buffer: Buffer, contentEncoding: string): Buffer {
+  const encoding = contentEncoding.trim().toLowerCase();
+  if (!encoding || encoding === 'identity') return buffer;
+  if (encoding.includes('br')) return zlib.brotliDecompressSync(buffer);
+  if (encoding.includes('gzip')) return zlib.gunzipSync(buffer);
+  if (encoding.includes('deflate')) return zlib.inflateSync(buffer);
+  throw new Error(`Unsupported content-encoding: ${contentEncoding}`);
+}
+
 export function createServer({ targetPort, listenPort, getApps, onLog, onReady, terminal, browserCapture, sessionManager }: CreateServerOptions): ProxyServer {
   let defaultTarget = targetPort;
 
@@ -66,28 +81,51 @@ export function createServer({ targetPort, listenPort, getApps, onLog, onReady, 
 
   const proxy = httpProxy.createProxyServer({ ws: true, xfwd: true, changeOrigin: true });
 
+  proxy.on('proxyReq', (proxyReq: http.ClientRequest) => {
+    // Ask upstream for uncompressed HTML when possible to avoid decode/encode mismatch.
+    proxyReq.setHeader('accept-encoding', 'identity');
+  });
+
   const injectSnippet = getInjectScript();
 
   proxy.on('proxyRes', (proxyRes: http.IncomingMessage, req: http.IncomingMessage, res: http.ServerResponse) => {
     for (const h of IFRAME_BLOCKED) delete proxyRes.headers[h];
 
-    const ct = proxyRes.headers['content-type'] || '';
+    const ct = getHeaderValue(proxyRes.headers['content-type']);
     if (!ct.includes('text/html')) return;
 
     const origWrite = res.write;
     const origEnd = res.end;
     const chunks: Buffer[] = [];
 
-    delete proxyRes.headers['content-length'];
+    const contentEncoding = getHeaderValue(proxyRes.headers['content-encoding']);
 
-    res.write = function(chunk: unknown): boolean {
-      chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as string));
+    delete proxyRes.headers['content-length'];
+    delete proxyRes.headers['content-encoding'];
+
+    res.write = function(chunk: unknown, encoding?: BufferEncoding): boolean {
+      if (Buffer.isBuffer(chunk)) chunks.push(chunk);
+      else chunks.push(Buffer.from(String(chunk), encoding));
       return true;
     } as typeof res.write;
 
-    res.end = function(chunk?: unknown): http.ServerResponse {
-      if (chunk) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as string));
-      let body = Buffer.concat(chunks).toString('utf8');
+    res.end = function(chunk?: unknown, encoding?: BufferEncoding): http.ServerResponse {
+      if (chunk) {
+        if (Buffer.isBuffer(chunk)) chunks.push(chunk);
+        else chunks.push(Buffer.from(String(chunk), encoding));
+      }
+
+      let decoded = Buffer.from(Buffer.concat(chunks));
+      try {
+        decoded = Buffer.from(decodeBody(decoded, contentEncoding));
+      } catch (e: unknown) {
+        const eMsg = e instanceof Error ? e.message : String(e);
+        if (onLog) onLog('warn', `HTML decode skipped: ${eMsg}`);
+        (origEnd as Function).call(res, Buffer.concat(chunks));
+        return res;
+      }
+
+      let body = decoded.toString('utf8');
 
       if (body.includes('</head>')) {
         body = body.replace('</head>', injectSnippet + '</head>');

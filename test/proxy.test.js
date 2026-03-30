@@ -1,6 +1,7 @@
 const { describe, it, before, after } = require('node:test');
 const assert = require('node:assert/strict');
 const http = require('http');
+const zlib = require('zlib');
 const { createServer } = require('../dist/utils/proxy');
 
 describe('proxy', () => {
@@ -12,6 +13,18 @@ describe('proxy', () => {
   before(async () => {
     // Create a target app server
     targetServer = http.createServer((req, res) => {
+      if (req.url === '/compressed') {
+        const html = '<html><body>compressed target app</body></html>';
+        const gz = zlib.gzipSync(Buffer.from(html, 'utf8'));
+        res.writeHead(200, {
+          'Content-Type': 'text/html; charset=utf-8',
+          'Content-Encoding': 'gzip',
+          'Content-Length': String(gz.length),
+        });
+        res.end(gz);
+        return;
+      }
+
       res.writeHead(200, {
         'Content-Type': 'text/html',
         'X-Frame-Options': 'DENY',
@@ -108,5 +121,12 @@ describe('proxy', () => {
     assert.strictEqual(res.headers['x-frame-options'], undefined);
     // Non-blocked headers should remain
     assert.strictEqual(res.headers['x-custom'], 'kept');
+  });
+
+  it('handles compressed HTML responses without decode errors', async () => {
+    const res = await request('/compressed');
+    assert.strictEqual(res.status, 200);
+    assert.ok(res.body.includes('compressed target app'));
+    assert.strictEqual(res.headers['content-encoding'], undefined);
   });
 });
