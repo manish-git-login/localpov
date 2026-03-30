@@ -13,7 +13,7 @@
     "start": "node bin/localpov.js",
     "dev": "tsc --watch & node --watch bin/localpov.js",
     "mcp": "node bin/localpov-mcp.js",
-    "test": "tsc && node --test test/*.test.js",
+    "test": "tsc && node test/run.js",
     "prepublishOnly": "tsc"
   },
   "files": [

@@ -273,6 +273,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-seri
 <div id="view-debug">
   <div class="dbg-bar">
     <div class="dbg-bar-title">Debug</div>
+    <button class="btn" id="btn-dbg-clear" title="Clear browser data" style="font-size:12px;color:var(--red)">Clear</button>
     <button class="btn btn-icon" id="btn-dbg-refresh" title="Refresh">&#8635;</button>
   </div>
   <div class="dbg-scroll" id="dbg-scroll">
@@ -280,13 +281,19 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-seri
     <div class="dbg-summary" id="dbg-summary">
       <div class="dbg-stat"><div class="dbg-stat-num" id="dbg-errors">-</div><div class="dbg-stat-label">Console Errors</div></div>
       <div class="dbg-stat"><div class="dbg-stat-num" id="dbg-net-fail">-</div><div class="dbg-stat-label">Network Fails</div></div>
-      <div class="dbg-stat"><div class="dbg-stat-num" id="dbg-warnings">-</div><div class="dbg-stat-label">Warnings</div></div>
+      <div class="dbg-stat"><div class="dbg-stat-num" id="dbg-term-errors">-</div><div class="dbg-stat-label">Terminal Errors</div></div>
       <div class="dbg-stat"><div class="dbg-stat-num" id="dbg-net-slow">-</div><div class="dbg-stat-label">Slow Requests</div></div>
+    </div>
+
+    <!-- Terminal errors -->
+    <div class="dbg-section" id="dbg-term-section">
+      <div class="dbg-section-hdr">Terminal Errors <span class="badge" id="dbg-term-badge" style="display:none">0</span></div>
+      <div id="dbg-term-list"></div>
     </div>
 
     <!-- Console errors -->
     <div class="dbg-section" id="dbg-console-section">
-      <div class="dbg-section-hdr">Console <span class="badge" id="dbg-console-badge" style="display:none">0</span></div>
+      <div class="dbg-section-hdr">Browser Console <span class="badge" id="dbg-console-badge" style="display:none">0</span></div>
       <div id="dbg-console-list"></div>
     </div>
 
@@ -330,7 +337,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-seri
 <!-- Tab bar -->
 <div class="tab-bar">
   <button class="tab active" id="tab-apps" data-view="list">
-    <span class="tab-icon">&#9881;</span>
+    <span class="tab-icon">&#9673;</span>
     Apps
   </button>
   <button class="tab" id="tab-terminal" data-view="terminal">
@@ -496,6 +503,37 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-seri
 
   var $reconnect = document.getElementById('reconnect');
 
+  var appErrorCounts = {}; // port -> error count
+
+  function fetchAppErrors() {
+    fetchJSON('api/browser', function(data) {
+      appErrorCounts = {};
+      var byOrigin = data.byOrigin || {};
+      for (var origin in byOrigin) {
+        try {
+          var port = new URL(origin).port || (origin.indexOf('https') === 0 ? '443' : '80');
+          appErrorCounts[port] = (byOrigin[origin].consoleErrors || 0) + (byOrigin[origin].networkErrors || 0);
+        } catch(e) {}
+      }
+      // Re-render if on list view
+      if (currentView === 'list' && apps.length > 0) updateAppBadges();
+    });
+  }
+
+  function updateAppBadges() {
+    var badges = $apps.querySelectorAll('.app-error-badge');
+    for (var i = 0; i < badges.length; i++) {
+      var port = badges[i].getAttribute('data-port');
+      var count = appErrorCounts[port] || 0;
+      if (count > 0) {
+        badges[i].textContent = count;
+        badges[i].style.display = 'inline-block';
+      } else {
+        badges[i].style.display = 'none';
+      }
+    }
+  }
+
   function renderApps(list) {
     apps = list;
     $scan.style.display = list.length > 0 ? 'none' : 'flex';
@@ -508,10 +546,15 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-seri
     var html = '';
     for (var i = 0; i < list.length; i++) {
       var a = list[i];
+      var errCount = appErrorCounts[a.port] || 0;
       html += '<div class="card" data-port="' + a.port + '" data-fw="' + esc(a.framework) + '">'
         + '<span class="dot"></span>'
         + '<div class="card-info">'
-        + '<div class="card-port">localhost:' + a.port + '</div>'
+        + '<div class="card-port">localhost:' + a.port
+        + ' <span class="app-error-badge" data-port="' + a.port + '" style="display:' + (errCount > 0 ? 'inline-block' : 'none')
+        + ';min-width:16px;height:16px;border-radius:8px;background:var(--red);color:#fff;font-size:10px;font-weight:700;line-height:16px;text-align:center;padding:0 4px;margin-left:4px;vertical-align:middle">'
+        + (errCount || '') + '</span>'
+        + '</div>'
         + '<div class="card-fw">' + esc(a.framework) + '</div>'
         + '</div>'
         + '<span class="card-arr">\u203A</span>'
@@ -586,8 +629,9 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-seri
   }
 
   fetchApps();
+  fetchAppErrors();
   setInterval(function() {
-    if (currentView === 'list') fetchApps();
+    if (currentView === 'list') { fetchApps(); fetchAppErrors(); }
   }, 3000);
 
   // Handle initial route after first fetch
@@ -873,11 +917,15 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-seri
   var dbgTotalErrors = 0;
 
   document.getElementById('btn-dbg-refresh').addEventListener('click', fetchDebugData);
+  document.getElementById('btn-dbg-clear').addEventListener('click', function() {
+    fetchJSON('api/browser/clear', function() { fetchDebugData(); });
+  });
 
   function fetchDebugData() {
     fetchJSON('api/browser', renderBrowserSummary);
     fetchJSON('api/browser?source=console', function(data) { renderConsoleEntries(data.entries || []); });
     fetchJSON('api/browser?source=network', function(data) { renderNetworkEntries(data.entries || []); });
+    fetchJSON('api/sessions/errors', renderTerminalErrors);
     fetchJSON('api/health', renderHealth);
   }
 
@@ -1001,6 +1049,69 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-seri
     $list.innerHTML = html;
   }
 
+  function renderTerminalErrors(data) {
+    var errors = data.errors || [];
+    var $list = document.getElementById('dbg-term-list');
+    var $badge = document.getElementById('dbg-term-badge');
+    var $stat = document.getElementById('dbg-term-errors');
+
+    setStatNum('dbg-term-errors', errors.length, errors.length > 0);
+
+    if (errors.length > 0) {
+      $badge.textContent = errors.length;
+      $badge.style.display = 'inline-block';
+    } else {
+      $badge.style.display = 'none';
+    }
+
+    // Update tab badge to include terminal errors
+    var totalBadge = dbgTotalErrors + errors.length;
+    var $tabBadge = document.getElementById('dbg-tab-badge');
+    if (totalBadge > 0) {
+      $tabBadge.textContent = totalBadge > 99 ? '99+' : totalBadge;
+      $tabBadge.style.display = 'inline-block';
+    } else {
+      $tabBadge.style.display = 'none';
+    }
+
+    if (errors.length === 0) {
+      $list.innerHTML = '<div class="dbg-empty">No terminal errors detected.</div>';
+      return;
+    }
+
+    // Group by cwd (project)
+    var byProject = {};
+    for (var i = 0; i < errors.length; i++) {
+      var cwd = errors[i].cwd || 'unknown';
+      var project = cwd.split('/').pop() || cwd;
+      if (!byProject[project]) byProject[project] = [];
+      byProject[project].push(errors[i]);
+    }
+
+    var html = '';
+    var projects = Object.keys(byProject);
+    for (var p = 0; p < projects.length; p++) {
+      var projName = projects[p];
+      var projErrors = byProject[projName];
+      if (projects.length > 1) {
+        html += '<div style="font-size:11px;font-weight:600;color:var(--fg2);margin:8px 0 4px;text-transform:uppercase;letter-spacing:0.5px">' + esc(projName) + ' <span style="font-weight:400;color:var(--fg3)">(' + projErrors.length + ')</span></div>';
+      }
+      for (var j = 0; j < projErrors.length && j < 10; j++) {
+        var e = projErrors[j];
+        var alive = e.alive ? '<span style="color:var(--green)">●</span>' : '<span style="color:var(--fg3)">●</span>';
+        html += '<div class="dbg-entry">'
+          + '<div class="dbg-entry-hdr">'
+          + '<span class="dbg-level dbg-level-error">' + esc(e.lang || 'error') + '</span>'
+          + '<span style="font-size:10px;color:var(--fg3)">PID ' + e.pid + ' ' + alive + '</span>'
+          + '</div>'
+          + '<div class="dbg-msg">' + esc(String(e.text || '').slice(0, 300)) + '</div>'
+          + (e.context ? '<div class="dbg-url" style="white-space:pre-wrap;max-height:80px;overflow:hidden">' + esc(String(e.context).slice(0, 400)) + '</div>' : '')
+          + '</div>';
+      }
+    }
+    $list.innerHTML = html;
+  }
+
   function renderHealth(data) {
     document.getElementById('dbg-mem').textContent = (data.memory || 0) + '% (' + (data.heapMB || 0) + 'MB heap)';
     document.getElementById('dbg-uptime').textContent = formatDuration(data.uptime || 0);
@@ -1029,13 +1140,13 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-seri
     if (currentView === 'debug') fetchDebugData();
   }, 2000);
 
-  // Also poll browser summary in background for tab badge
+  // Also poll browser + terminal summary in background for tab badge
   setInterval(function() {
     if (currentView !== 'debug') {
-      fetchJSON('api/browser', function(data) {
-        var ce = data.console || {};
-        var ne = data.network || {};
-        var total = (ce.errors || 0) + (ne.failed || 0);
+      var total = 0;
+      var done = 0;
+      function updateBadge() {
+        if (++done < 2) return;
         var $badge = document.getElementById('dbg-tab-badge');
         if (total > 0) {
           $badge.textContent = total > 99 ? '99+' : total;
@@ -1043,13 +1154,23 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-seri
         } else {
           $badge.style.display = 'none';
         }
+      }
+      fetchJSON('api/browser', function(data) {
+        var ce = data.console || {};
+        var ne = data.network || {};
+        total += (ce.errors || 0) + (ne.failed || 0);
+        updateBadge();
+      });
+      fetchJSON('api/sessions/errors', function(data) {
+        total += (data.errors || []).length;
+        updateBadge();
       });
     }
   }, 5000);
 
   // ─── MCP Tool Tester ───
   var mcpTools = [
-    { name: 'get_diagnostics', desc: 'Full health check', api: 'api/sessions/errors', custom: function(cb) {
+    { name: 'get_diagnostics', desc: 'Full health check', custom: function(cb) {
       var result = {};
       var done = 0;
       function check() { if (++done === 4) cb(result); }
@@ -1060,17 +1181,21 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-seri
     }},
     { name: 'list_sessions', desc: 'Terminal sessions', api: 'api/sessions' },
     { name: 'read_terminal', desc: 'Read session output', api: 'api/sessions?lines=50', needsPid: true },
-    { name: 'get_errors', desc: 'Errors across sessions', api: 'api/sessions/errors' },
-    { name: 'read_browser', desc: 'Console + network', api: 'api/browser' },
+    { name: 'get_errors', desc: 'Terminal errors by project', api: 'api/sessions/errors' },
+    { name: 'get_build_errors', desc: 'Structured build errors', api: 'api/build-errors', note: 'Parses TS/ESLint/Webpack/Vite output' },
+    { name: 'read_browser', desc: 'Console + network logs', custom: function(cb) {
+      var result = {};
+      var done = 0;
+      function check() { if (++done === 2) cb(result); }
+      fetchJSON('api/browser?source=console', function(d) { result.console = d.entries || []; check(); });
+      fetchJSON('api/browser?source=network', function(d) { result.network = d.entries || []; check(); });
+    }},
     { name: 'check_ports', desc: 'Port status', api: 'api/ports' },
     { name: 'check_env', desc: 'Environment vars', api: 'api/env' },
     { name: 'process_health', desc: 'System resources', api: 'api/process' },
-    { name: 'take_screenshot', desc: 'Browser screenshot', api: 'api/browser', note: 'Requires browser connected via proxy' },
-    { name: 'get_build_errors', desc: 'Structured build errors', api: 'api/sessions/errors', note: 'Parses TS/ESLint/Webpack output' },
-    { name: 'docker', desc: 'Docker containers', api: 'api/health', note: 'Requires Docker running' },
-    { name: 'tail_log', desc: 'Read log files', api: 'api/health', note: 'Pass file path as argument' },
-    { name: 'search_all', desc: 'Regex search terminals', api: 'api/sessions', note: 'Pass pattern as argument' },
-    { name: 'read_command', desc: 'Specific command output', api: 'api/sessions', note: 'Pass PID + index' }
+    { name: 'take_screenshot', desc: 'Browser screenshot', api: 'api/browser', note: 'Requires browser via proxy' },
+    { name: 'search_all', desc: 'Regex search terminals', api: 'api/sessions', note: 'Needs pattern argument (MCP only)' },
+    { name: 'read_command', desc: 'Specific command output', api: 'api/sessions', note: 'Needs PID + index (MCP only)' }
   ];
 
   var $mcpTools = document.getElementById('mcp-tools');

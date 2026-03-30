@@ -14,6 +14,7 @@ export interface ConsoleEntry {
   source: string | null;
   ts: number;
   url: string | null;
+  origin: string | null;
 }
 
 export interface NetworkEntry {
@@ -29,12 +30,15 @@ export interface NetworkEntry {
   responseHeaders: Record<string, string> | null;
   responseBody: string | null;
   ts: number;
+  origin: string | null;
 }
 
 interface ConsoleQueryOptions {
   level?: string | string[];
   since?: number;
   limit?: number;
+  origin?: string;
+  port?: number;
 }
 
 interface NetworkQueryOptions {
@@ -43,6 +47,33 @@ interface NetworkQueryOptions {
   slowThreshold?: number;
   since?: number;
   limit?: number;
+  origin?: string;
+  port?: number;
+}
+
+/** Extract origin (e.g. "http://localhost:3000") from a full URL */
+function extractOrigin(url: string | null | undefined): string | null {
+  if (!url) return null;
+  try {
+    const u = new URL(url);
+    return u.origin;
+  } catch {
+    return null;
+  }
+}
+
+/** Extract port number from a URL or origin string */
+function extractPort(url: string | null | undefined): number | null {
+  if (!url) return null;
+  try {
+    const u = new URL(url);
+    if (u.port) return parseInt(u.port, 10);
+    if (u.protocol === 'https:') return 443;
+    if (u.protocol === 'http:') return 80;
+    return null;
+  } catch {
+    return null;
+  }
 }
 
 interface ScreenshotData {
@@ -76,6 +107,7 @@ interface BrowserSummary {
   };
   hasScreenshot: boolean;
   screenshotAge: number | null;
+  byOrigin?: Record<string, { consoleErrors: number; networkErrors: number }>;
 }
 
 interface BrowserCaptureOptions {
@@ -250,6 +282,7 @@ export class BrowserCapture extends EventEmitter {
       source: entry.source || null,
       ts: entry.ts || Date.now(),
       url: entry.url || null,
+      origin: entry.origin || extractOrigin(entry.url) || null,
     };
     this.consoleEntries.push(item);
     while (this.consoleEntries.length > MAX_CONSOLE_ENTRIES) {
@@ -270,6 +303,14 @@ export class BrowserCapture extends EventEmitter {
 
     if (options.since) {
       entries = entries.filter(e => e.ts >= options.since!);
+    }
+
+    if (options.port) {
+      const p = options.port;
+      entries = entries.filter(e => extractPort(e.origin || e.url) === p);
+    } else if (options.origin) {
+      const o = options.origin;
+      entries = entries.filter(e => e.origin === o);
     }
 
     const limit = options.limit || 50;
@@ -296,6 +337,7 @@ export class BrowserCapture extends EventEmitter {
       responseHeaders: entry.responseHeaders || null,
       responseBody: entry.responseBody ? String(entry.responseBody).slice(0, 5000) : null,
       ts: entry.ts || Date.now(),
+      origin: entry.origin || extractOrigin(entry.url) || null,
     };
     this.networkEntries.push(item);
     while (this.networkEntries.length > MAX_NETWORK_ENTRIES) {
@@ -320,6 +362,14 @@ export class BrowserCapture extends EventEmitter {
 
     if (options.since) {
       entries = entries.filter(e => e.ts >= options.since!);
+    }
+
+    if (options.port) {
+      const p = options.port;
+      entries = entries.filter(e => extractPort(e.origin || e.url) === p);
+    } else if (options.origin) {
+      const o = options.origin;
+      entries = entries.filter(e => e.origin === o);
     }
 
     const limit = options.limit || 50;
@@ -350,11 +400,36 @@ export class BrowserCapture extends EventEmitter {
 
   // ── Summary ──
 
+  /** Get distinct origins seen across all entries */
+  getOrigins(): string[] {
+    const origins = new Set<string>();
+    for (const e of this.consoleEntries) {
+      if (e.origin) origins.add(e.origin);
+    }
+    for (const e of this.networkEntries) {
+      if (e.origin) origins.add(e.origin);
+    }
+    return Array.from(origins).sort();
+  }
+
   getSummary(): BrowserSummary {
     const consoleErrors = this.consoleEntries.filter(e => e.level === 'error');
     const consoleWarns = this.consoleEntries.filter(e => e.level === 'warn');
     const networkErrors = this.networkEntries.filter(e => e.status >= 400 || e.error);
     const slowRequests = this.networkEntries.filter(e => e.duration >= 1000);
+
+    // Group error counts by origin
+    const byOrigin: Record<string, { consoleErrors: number; networkErrors: number }> = {};
+    for (const e of consoleErrors) {
+      const o = e.origin || 'unknown';
+      if (!byOrigin[o]) byOrigin[o] = { consoleErrors: 0, networkErrors: 0 };
+      byOrigin[o].consoleErrors++;
+    }
+    for (const e of networkErrors) {
+      const o = e.origin || 'unknown';
+      if (!byOrigin[o]) byOrigin[o] = { consoleErrors: 0, networkErrors: 0 };
+      byOrigin[o].networkErrors++;
+    }
 
     return {
       console: {
@@ -381,6 +456,7 @@ export class BrowserCapture extends EventEmitter {
       },
       hasScreenshot: !!this._screenshotData,
       screenshotAge: this._screenshotData ? Date.now() - this._screenshotTs : null,
+      byOrigin: Object.keys(byOrigin).length > 0 ? byOrigin : undefined,
     };
   }
 

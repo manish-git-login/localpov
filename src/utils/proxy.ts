@@ -241,13 +241,32 @@ export function createServer({ targetPort, listenPort, getApps, onLog, onReady, 
     if (urlObj.pathname === '/__localpov__/api/browser') {
       if (!browserCapture) return json(res, { console: [], network: [], summary: null });
       const source = urlObj.searchParams.get('source') || 'summary';
+      const portFilter = urlObj.searchParams.get('port') ? parseInt(urlObj.searchParams.get('port')!, 10) : undefined;
       if (source === 'console') {
-        return json(res, { entries: browserCapture.getConsoleEntries({ limit: 100 }) });
+        return json(res, { entries: browserCapture.getConsoleEntries({ limit: 100, port: portFilter }) });
       }
       if (source === 'network') {
-        return json(res, { entries: browserCapture.getNetworkEntries({ limit: 100 }) });
+        return json(res, { entries: browserCapture.getNetworkEntries({ limit: 100, port: portFilter }) });
       }
       return json(res, browserCapture.getSummary());
+    }
+
+    if (urlObj.pathname === '/__localpov__/api/browser/clear') {
+      if (browserCapture) browserCapture.clear();
+      return json(res, { ok: true });
+    }
+
+    if (urlObj.pathname === '/__localpov__/api/build-errors') {
+      if (!sessionManager) return json(res, { errors: [] });
+      const { parseBuildErrors } = require('../collectors/build-parser');
+      const sessions = sessionManager.listSessions().filter((s: any) => s.alive);
+      let text = '';
+      for (const s of sessions) {
+        const result = sessionManager.readSession(s.pid, { lines: 200 });
+        if (!result.error) text += result.lines.join('\n') + '\n';
+      }
+      const errors = parseBuildErrors(text);
+      return json(res, { total: errors.length, errors: errors.slice(0, 30) });
     }
 
     if (urlObj.pathname === '/__localpov__/api/health') {

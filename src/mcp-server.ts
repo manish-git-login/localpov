@@ -212,9 +212,10 @@ server.registerTool('read_command', {
 // ────────────────────────────────────────────────────────────
 server.registerTool('get_errors', {
   title: 'Find Terminal Errors',
-  description: 'Find errors across all captured terminal sessions. Detects JS, TS, Python, Rust, Go, and generic error patterns. Returns up to 20 most recent errors.',
+  description: 'Find errors across all captured terminal sessions. Detects JS, TS, Python, Rust, Go, and generic error patterns. Returns up to 20 most recent errors. Use cwd to filter by project directory.',
   inputSchema: z.object({
     since: z.coerce.number().optional().describe('Only errors after this Unix timestamp in milliseconds'),
+    cwd: z.string().optional().describe('Filter errors by project directory (substring match, e.g. "form-builder")'),
   }),
   annotations: {
     readOnlyHint: true,
@@ -222,9 +223,26 @@ server.registerTool('get_errors', {
     idempotentHint: true,
     openWorldHint: false,
   },
-}, async ({ since }: { since?: number }) => {
-  const errors = sessions.getErrors({ since });
-  return textResult({ total: errors.length, errors: errors.slice(0, 20) });
+}, async ({ since, cwd }: { since?: number; cwd?: string }) => {
+  let errors = sessions.getErrors({ since });
+
+  if (cwd) {
+    const filter = cwd.toLowerCase();
+    errors = errors.filter(e => e.cwd.toLowerCase().includes(filter));
+  }
+
+  // Group by cwd for multi-project visibility
+  const byProject: Record<string, number> = {};
+  for (const e of errors) {
+    const project = e.cwd || 'unknown';
+    byProject[project] = (byProject[project] || 0) + 1;
+  }
+
+  return textResult({
+    total: errors.length,
+    errors: errors.slice(0, 20),
+    byProject: Object.keys(byProject).length > 1 ? byProject : undefined,
+  });
 });
 
 // ────────────────────────────────────────────────────────────
@@ -255,7 +273,7 @@ server.registerTool('search_all', {
 // ────────────────────────────────────────────────────────────
 server.registerTool('read_browser', {
   title: 'Read Browser Console & Network',
-  description: 'Read browser console logs and/or network requests captured via LocalPOV proxy injection. Requires `localpov` proxy running with a browser connected. Set source to "console" for JS errors/warnings, "network" for HTTP requests, or "all" for both.',
+  description: 'Read browser console logs and/or network requests captured via LocalPOV proxy injection. Requires `localpov` proxy running with a browser connected. Set source to "console" for JS errors/warnings, "network" for HTTP requests, or "all" for both. Use port to filter by app (e.g. port=3000).',
   inputSchema: z.object({
     source: z.enum(['console', 'network', 'all']).optional().default('all')
       .describe('What to read: "console" (JS errors/logs), "network" (HTTP requests), or "all"'),
@@ -265,6 +283,8 @@ server.registerTool('read_browser', {
       .describe('Network: only show failed requests (4xx/5xx)'),
     limit: z.coerce.number().optional().default(50)
       .describe('Max entries per source (default: 50, max: 200)'),
+    port: z.coerce.number().optional()
+      .describe('Filter by app port (e.g. 3000). Omit to show all apps.'),
   }),
   annotations: {
     readOnlyHint: true,
@@ -272,21 +292,28 @@ server.registerTool('read_browser', {
     idempotentHint: true,
     openWorldHint: false,
   },
-}, async ({ source, level, errors_only, limit }: { source: string; level: string; errors_only: boolean; limit: number }) => {
+}, async ({ source, level, errors_only, limit, port }: { source: string; level: string; errors_only: boolean; limit: number; port?: number }) => {
   browser.loadFromDisk();
   const cappedLimit = Math.min(limit || 50, 200);
   const result: Record<string, unknown> = {};
 
   if (source === 'console' || source === 'all') {
-    const options: { limit: number; level?: string[] } = { limit: cappedLimit };
+    const options: { limit: number; level?: string[]; port?: number } = { limit: cappedLimit };
     if (level !== 'all') {
       options.level = level === 'error' ? ['error'] : level === 'warn' ? ['error', 'warn'] : [level];
     }
+    if (port) options.port = port;
     result.console = browser.getConsoleEntries(options);
   }
 
   if (source === 'network' || source === 'all') {
-    result.network = browser.getNetworkEntries({ errorsOnly: errors_only, limit: cappedLimit });
+    result.network = browser.getNetworkEntries({ errorsOnly: errors_only, limit: cappedLimit, port });
+  }
+
+  // Include available origins for discoverability
+  const origins = browser.getOrigins();
+  if (origins.length > 1) {
+    result.origins = origins;
   }
 
   // Check if proxy is not running / no browser connected
