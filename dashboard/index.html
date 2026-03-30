@@ -250,11 +250,18 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-seri
   </div>
   <div id="term-output" class="term-output"></div>
   <div id="term-empty" class="term-empty" style="display:none">
-    <div>
-      <p style="font-size:16px;margin-bottom:8px">No live terminal stream</p>
-      <p>Use <code>localpov run -- npm run dev</code> for live output here.</p>
-      <p style="margin-top:8px;font-size:12px;color:var(--fg3)">Shell sessions are captured automatically and readable by your AI agent via MCP.</p>
+    <div style="width:100%;max-width:700px;padding:0 16px">
+      <p style="font-size:16px;margin-bottom:12px;text-align:center">Captured Terminal Sessions</p>
+      <div id="sessions-list" style="text-align:left"></div>
+      <p id="sessions-none" style="text-align:center;color:var(--fg3);font-size:13px;display:none">No sessions captured yet. Run <code>localpov setup</code> and open a new terminal.</p>
     </div>
+  </div>
+  <div id="session-detail" style="display:none;padding:12px;overflow:auto;flex:1">
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px">
+      <button class="btn" id="btn-session-back" style="font-size:13px">&#8249; Sessions</button>
+      <span id="session-detail-title" style="font-size:14px;color:var(--fg2)"></span>
+    </div>
+    <pre id="session-detail-output" style="font-family:var(--mono);font-size:12px;line-height:1.5;white-space:pre-wrap;word-break:break-all;background:var(--bg2);padding:12px;border-radius:8px;margin:0;max-height:calc(100vh - 200px);overflow:auto"></pre>
   </div>
   <div id="term-status" class="term-status">
     <span id="term-status-dot" class="term-status-dot stopped"></span>
@@ -624,6 +631,89 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-seri
       $termOutput.scrollTop = $termOutput.scrollHeight;
     }
   }
+
+  // ─── Sessions (shell integration captures) ───
+  var $sessionsList = document.getElementById('sessions-list');
+  var $sessionsNone = document.getElementById('sessions-none');
+  var $sessionDetail = document.getElementById('session-detail');
+  var $sessionDetailTitle = document.getElementById('session-detail-title');
+  var $sessionDetailOutput = document.getElementById('session-detail-output');
+  var $btnSessionBack = document.getElementById('btn-session-back');
+
+  function fetchSessions() {
+    fetch('/__localpov__/api/sessions').then(function(r) { return r.json(); }).then(function(data) {
+      if (!data.sessions || data.sessions.length === 0) {
+        $sessionsList.innerHTML = '';
+        $sessionsNone.style.display = 'block';
+        return;
+      }
+      $sessionsNone.style.display = 'none';
+      var html = '';
+      for (var i = 0; i < data.sessions.length; i++) {
+        var s = data.sessions[i];
+        var alive = s.alive;
+        var dot = alive ? '<span style="color:#2ecc71">●</span>' : '<span style="color:#666">●</span>';
+        var size = s.logSize > 1024 ? Math.round(s.logSize / 1024) + 'KB' : s.logSize + 'B';
+        var shellName = (s.shell || '').split('/').pop() || 'shell';
+        var cwdShort = (s.cwd || '').split('/').pop() || s.cwd || '';
+        html += '<div onclick="viewSession(' + s.pid + ',\'' + shellName + '\')" style="padding:10px 12px;border:1px solid var(--border);border-radius:8px;margin-bottom:6px;cursor:pointer;display:flex;align-items:center;gap:10px;transition:background .15s" onmouseover="this.style.background=\'var(--bg2)\'" onmouseout="this.style.background=\'transparent\'">';
+        html += dot + ' ';
+        html += '<span style="font-family:var(--mono);font-size:13px;min-width:60px">PID ' + s.pid + '</span>';
+        html += '<span style="color:var(--fg2);font-size:13px">' + shellName + '</span>';
+        html += '<span style="color:var(--fg3);font-size:12px;margin-left:auto">' + size + '</span>';
+        html += '<span style="color:var(--fg3);font-size:12px">' + cwdShort + '</span>';
+        html += '</div>';
+      }
+      $sessionsList.innerHTML = html;
+    }).catch(function() {});
+  }
+
+  window.viewSession = function(pid, shellName) {
+    $sessionDetailTitle.textContent = 'PID ' + pid + ' (' + shellName + ')';
+    $sessionDetailOutput.textContent = 'Loading...';
+    $termEmpty.style.display = 'none';
+    $termOutput.style.display = 'none';
+    $sessionDetail.style.display = 'flex';
+    $sessionDetail.style.flexDirection = 'column';
+
+    fetch('/__localpov__/api/sessions?pid=' + pid + '&lines=200').then(function(r) { return r.json(); }).then(function(data) {
+      if (data.error) {
+        $sessionDetailOutput.textContent = 'Error: ' + data.error;
+        return;
+      }
+      $sessionDetailOutput.textContent = (data.lines || []).join('\n') || '(empty session)';
+      $sessionDetailOutput.scrollTop = $sessionDetailOutput.scrollHeight;
+    }).catch(function(e) {
+      $sessionDetailOutput.textContent = 'Failed to load: ' + e.message;
+    });
+  };
+
+  $btnSessionBack.addEventListener('click', function() {
+    $sessionDetail.style.display = 'none';
+    $termEmpty.style.display = 'flex';
+    $termOutput.style.display = 'none';
+    fetchSessions();
+  });
+
+  // When terminal tab shows and no live stream, load sessions
+  var origShowTerm = showView;
+  function showViewPatched(v) {
+    origShowTerm(v);
+    if (v === 'terminal' && !termConnected) {
+      fetchSessions();
+    }
+  }
+
+  // Auto-load sessions when term-empty is shown
+  var _termEmptyObserver = new MutationObserver(function() {
+    if ($termEmpty.style.display === 'flex') fetchSessions();
+  });
+  _termEmptyObserver.observe($termEmpty, { attributes: true, attributeFilter: ['style'] });
+
+  // Initial load
+  setTimeout(function() {
+    if (!termConnected) fetchSessions();
+  }, 1000);
 
   // Track if user scrolled up manually
   $termOutput.addEventListener('scroll', function() {

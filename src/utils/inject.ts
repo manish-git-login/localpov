@@ -8,15 +8,16 @@
  *
  * Sends everything to the LocalPOV server via WebSocket.
  */
-export function getInjectScript(wsUrl: string): string {
+export function getInjectScript(_wsUrl?: string): string {
   // Minified-ish but readable. Runs in the user's browser.
+  // Always uses location.host so it works even if the port changes (auto-fallback)
   return `
 <script data-localpov-inject>
 (function() {
   if (window.__localpov_injected) return;
   window.__localpov_injected = true;
 
-  var WS_URL = ${JSON.stringify(wsUrl)};
+  var WS_URL = "ws://" + location.host + "/__localpov__/ws/browser";
   var ws = null;
   var queue = [];
   var MAX_QUEUE = 100;

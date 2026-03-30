@@ -7,6 +7,7 @@ import os from 'os';
 import { getInjectScript } from './inject';
 import { TerminalCapture } from '../collectors/terminal';
 import { BrowserCapture } from '../collectors/browser-capture';
+import { SessionManager } from './session-manager';
 
 const DASHBOARD_PREFIX = '/__localpov__';
 const DASHBOARD_DIR = path.join(__dirname, '..', '..', 'dashboard');
@@ -32,9 +33,10 @@ interface CreateServerOptions {
   listenPort: number;
   getApps?: () => AppInfo[];
   onLog?: (level: string, message: string | number) => void;
-  onReady?: () => void;
+  onReady?: (actualPort: number) => void;
   terminal?: TerminalCapture | null;
   browserCapture?: BrowserCapture | null;
+  sessionManager?: SessionManager | null;
 }
 
 interface ProxyServer {
@@ -56,13 +58,15 @@ function parseCookies(str: string | undefined): Record<string, string> {
   return out;
 }
 
-export function createServer({ targetPort, listenPort, getApps, onLog, onReady, terminal, browserCapture }: CreateServerOptions): ProxyServer {
+export function createServer({ targetPort, listenPort, getApps, onLog, onReady, terminal, browserCapture, sessionManager }: CreateServerOptions): ProxyServer {
   let defaultTarget = targetPort;
+
+  // Clear stale browser data from previous sessions
+  if (browserCapture) browserCapture.clear();
 
   const proxy = httpProxy.createProxyServer({ ws: true, xfwd: true, changeOrigin: true });
 
-  const injectWsUrl = `ws://\${req_host}:${listenPort}/__localpov__/ws/browser`;
-  const injectSnippet = getInjectScript(injectWsUrl.replace('${req_host}', '"+location.hostname+"'));
+  const injectSnippet = getInjectScript();
 
   proxy.on('proxyRes', (proxyRes: http.IncomingMessage, req: http.IncomingMessage, res: http.ServerResponse) => {
     for (const h of IFRAME_BLOCKED) delete proxyRes.headers[h];
@@ -170,6 +174,25 @@ export function createServer({ targetPort, listenPort, getApps, onLog, onReady, 
       return json(res, { ok: true, uptime: process.uptime() | 0 });
     }
 
+    if (urlObj.pathname === '/__localpov__/api/sessions') {
+      if (!sessionManager) return json(res, { sessions: [], errors: [] });
+      const sessions = sessionManager.listSessions();
+      const pidParam = urlObj.searchParams.get('pid');
+      if (pidParam) {
+        const pid = parseInt(pidParam, 10);
+        const lines = parseInt(urlObj.searchParams.get('lines') || '50', 10);
+        const result = sessionManager.readSession(pid, { lines });
+        return json(res, result);
+      }
+      return json(res, { sessions });
+    }
+
+    if (urlObj.pathname === '/__localpov__/api/sessions/errors') {
+      if (!sessionManager) return json(res, { errors: [] });
+      const errors = sessionManager.getErrors({ maxPerSession: 10 });
+      return json(res, { errors });
+    }
+
     if (urlObj.pathname === '/__localpov__/api/terminal') {
       if (terminal) {
         return json(res, terminal.getStatus());
@@ -232,6 +255,12 @@ export function createServer({ targetPort, listenPort, getApps, onLog, onReady, 
       return res.end();
     }
 
+    // No target server detected yet — serve a waiting page instead of proxying to nothing
+    if (!port || port === 0) {
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+      return res.end(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>LocalPOV</title><meta http-equiv="refresh" content="3"><style>body{font-family:system-ui;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;background:#1a1a2e;color:#e0e0e0;flex-direction:column;gap:16px}code{background:#2a2a4a;padding:4px 12px;border-radius:4px;font-size:14px}.spin{animation:spin 1s linear infinite;display:inline-block}@keyframes spin{to{transform:rotate(360deg)}}</style></head><body><div class="spin">&#9696;</div><h2>Waiting for dev server...</h2><p>Start your app (e.g. <code>npm run dev</code>) and this page will auto-refresh.</p><p style="opacity:0.5;font-size:13px">Dashboard: <a href="/__localpov__/" style="color:#7b9ef5">/__localpov__/</a></p></body></html>`);
+    }
+
     proxy.web(req, res, { target: `http://127.0.0.1:${port}` });
   });
 
@@ -271,7 +300,13 @@ export function createServer({ targetPort, listenPort, getApps, onLog, onReady, 
             }
           }
         });
-        ws.on('close', () => browserClients.delete(ws));
+        ws.on('close', () => {
+          browserClients.delete(ws);
+          // Clear stale browser data when last client disconnects
+          if (browserClients.size === 0 && browserCapture) {
+            browserCapture.clear();
+          }
+        });
         ws.on('error', (e: Error) => {
           if (onLog) onLog('warn', `Browser WS error: ${e.message}`);
           browserClients.delete(ws);
@@ -328,12 +363,20 @@ export function createServer({ targetPort, listenPort, getApps, onLog, onReady, 
 
   server.on('error', (err: NodeJS.ErrnoException) => {
     if (err.code === 'EADDRINUSE') {
-      if (onLog) onLog('fatal', `Port ${listenPort} already in use. Is another instance running?`);
+      // Try next port automatically
+      listenPort++;
+      if (listenPort > initialPort + 10) {
+        if (onLog) onLog('error', `No available ports found (tried ${initialPort}-${listenPort - 1})`);
+        return;
+      }
+      server.listen(listenPort, '0.0.0.0');
+      return;
     }
     if (onLog) onLog('error', `Server error: ${err.message}`);
   });
 
-  server.listen(listenPort, '0.0.0.0', () => { if (onReady) onReady(); });
+  const initialPort = listenPort;
+  server.listen(listenPort, '0.0.0.0', () => { if (onReady) onReady(listenPort); });
 
   function serveDashboard(pathname: string, res: http.ServerResponse): void {
     let filePath = pathname.replace(DASHBOARD_PREFIX, '') || '/';

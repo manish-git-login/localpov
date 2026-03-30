@@ -578,7 +578,12 @@ async function main() {
   }
 
   console.log('');
-  const defaultPort = detectedApps.length > 0 ? detectedApps[0].port : 3000;
+  const defaultPort = detectedApps.length > 0 ? detectedApps[0].port : 0;
+
+  // Deduplicate proxy errors — only log each unique message once per 30s
+  const _lastProxyError = { msg: '', ts: 0 };
+
+  const dashboardSessions = new SessionManager();
 
   srv = createServer({
     targetPort: defaultPort,
@@ -586,14 +591,21 @@ async function main() {
     getApps: () => detectedApps,
     terminal: terminal,
     browserCapture: browserCapture,
+    sessionManager: dashboardSessions,
     onLog: (type, msg) => {
       if (type === 'switch') console.log(`  ${c.g('→')} Preview: localhost:${c.b(msg)}`);
-      else if (type === 'error') console.log(`  ${c.r('✗')} ${msg}`);
+      else if (type === 'error') {
+        const now = Date.now();
+        if (msg === _lastProxyError.msg && now - _lastProxyError.ts < 30000) return;
+        _lastProxyError.msg = msg;
+        _lastProxyError.ts = now;
+        console.log(`  ${c.r('✗')} ${msg}`);
+      }
     },
-    onReady: () => {
-      const localURL = `http://localhost:${LISTEN_PORT}/__localpov__/`;
+    onReady: (actualPort) => {
+      const localURL = `http://localhost:${actualPort}/__localpov__/`;
 
-      console.log(`  ${c.g('✓')} Running on :${LISTEN_PORT}`);
+      console.log(`  ${c.g('✓')} Running on :${actualPort}`);
       if (terminal) {
         console.log(`  ${c.g('✓')} Terminal capture active`);
       }
@@ -612,6 +624,10 @@ async function main() {
       for (const app of fresh) {
         if (!detectedApps.find(a => a.port === app.port)) {
           console.log(`  ${c.g('+')} localhost:${c.b(app.port)} ${c.d(`(${app.framework})`)}`);
+          // Auto-switch proxy to first detected server
+          if (srv && detectedApps.length === 0) {
+            srv.setTarget(app.port);
+          }
         }
       }
       for (const app of detectedApps) {

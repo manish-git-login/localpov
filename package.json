@@ -1,6 +1,6 @@
 {
   "name": "localpov",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "Development context bridge for AI coding agents. Terminal capture, browser console, network logs, screenshots, Docker logs — one MCP server.",
   "bin": {
     "localpov": "bin/localpov.js",
